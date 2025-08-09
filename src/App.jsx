@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 // --- Configuration ---
-const NOTIFICATION_RADIUS_KM = 5;
+const API_BASE_URL = "http://127.0.0.1:8000"; // Your FastAPI backend URL
+const NOTIFICATION_RADIUS_KM = 30; // Increased radius for more likely hits
 const MINIMUM_ALTITUDE_FT = 10000;
-const TRACKING_INTERVAL_MS = 4000; // Check for planes every 4 seconds
+const TRACKING_INTERVAL_MS = 10000; // Check every 10 seconds to respect API rate limits
 
 // --- Helper Functions (Calculations) ---
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -38,33 +39,23 @@ const getDirectionPhrase = (bearing) => {
     return [];
 };
 
-
 // --- React Components ---
-
-/**
- * The Compass Component
- * A presentational component that displays the compass and needle.
- * @param {number} bearing - The direction in degrees (0-360) for the needle to point.
- */
 const Compass = ({ bearing }) => {
     return (
         <div className="relative w-64 h-64 sm:w-80 sm:h-80 rounded-full bg-gray-200 border-8 border-gray-300 shadow-lg flex items-center justify-center">
-            {/* Cardinal Direction Markers */}
             <span className="absolute top-2 text-xl font-bold text-gray-600">N</span>
             <span className="absolute bottom-2 text-xl font-bold text-gray-600">S</span>
             <span className="absolute left-5 text-xl font-bold text-gray-600">W</span>
             <span className="absolute right-5 text-xl font-bold text-gray-600">E</span>
-            
-            {/* Compass Needle */}
             <div 
                 className="absolute w-0 h-0"
                 style={{
                     borderLeft: '1rem solid transparent',
                     borderRight: '1rem solid transparent',
-                    borderBottom: '8rem solid #ef4444', // Tailwind's red-500
+                    borderBottom: '8rem solid #ef4444',
                     top: '1rem',
                     transformOrigin: 'bottom center',
-                    transition: 'transform 0.7s cubic-bezier(0.68, -0.55, 0.27, 1.55)', // Funky transition
+                    transition: 'transform 0.7s cubic-bezier(0.68, -0.55, 0.27, 1.55)',
                     transform: `rotate(${bearing}deg)`,
                 }}
             />
@@ -73,12 +64,6 @@ const Compass = ({ bearing }) => {
     );
 };
 
-/**
- * The Notification Component
- * Displays information about the detected plane. Only renders if a plane is passed to it.
- * @param {object} plane - The data for the detected plane.
- * @param {function} onSpeakDirection - Callback to trigger the audio direction.
- */
 const PlaneNotification = ({ plane, onSpeakDirection }) => {
     if (!plane) return null;
 
@@ -94,8 +79,8 @@ const PlaneNotification = ({ plane, onSpeakDirection }) => {
                 Look up! Flight <span className="font-bold">{plane.callsign || 'N/A'}</span> is passing by.
             </p>
             <ul className="mt-3 text-sm text-gray-500">
-                <li><strong>Altitude:</strong> {Math.round(plane.altitude)} ft</li>
-                <li><strong>Speed:</strong> {Math.round(plane.velocity * 1.944)} knots</li>
+                <li><strong>Altitude:</strong> {Math.round(plane.altitude_ft)} ft</li>
+                <li><strong>Speed:</strong> {Math.round(plane.velocity_ms * 1.944)} knots</li>
             </ul>
             <button 
                 onClick={onSpeakDirection}
@@ -107,23 +92,16 @@ const PlaneNotification = ({ plane, onSpeakDirection }) => {
     );
 };
 
-/**
- * The Main App Component
- */
+// --- The Main App Component ---
 export default function App() {
-    // --- State Management ---
     const [isTracking, setIsTracking] = useState(false);
     const [userLocation, setUserLocation] = useState(null);
     const [detectedPlane, setDetectedPlane] = useState(null);
     const [bearing, setBearing] = useState(0);
     const [statusMessage, setStatusMessage] = useState("Click 'Start Tracking' to begin.");
     
-    // --- Refs for Audio (with updated, reliable sound sources) ---
     const notificationSoundRef = useRef(new Audio("https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg"));
     const audioRefs = useRef({
-        // Using generic, reliable sounds from Google's library to fix the error.
-        // For custom sounds, place your MP3s in the /public folder of your React project
-        // and use paths like "/north.mp3", "/south.mp3", etc.
         North: new Audio("https://actions.google.com/sounds/v1/beeps/beep_short.ogg"),
         South: new Audio("https://actions.google.com/sounds/v1/beeps/beep_short.ogg"),
         East: new Audio("https://actions.google.com/sounds/v1/beeps/beep_short.ogg"),
@@ -134,9 +112,6 @@ export default function App() {
     const audioQueue = useRef([]);
     const isSpeaking = useRef(false);
 
-    // --- Core Logic ---
-
-    // Function to get user's location
     const getLocation = useCallback(() => {
         if (!navigator.geolocation) {
             setStatusMessage("Geolocation is not supported by your browser.");
@@ -145,69 +120,171 @@ export default function App() {
         setStatusMessage("Getting your location...");
         navigator.geolocation.getCurrentPosition(
             (position) => {
-                setUserLocation({
+                const location = {
                     lat: position.coords.latitude,
                     lng: position.coords.longitude,
-                });
+                };
+                setUserLocation(location);
                 setStatusMessage("Location found! Ready to track.");
+                console.log("User location:", location);
             },
             () => {
                 setStatusMessage("Unable to get location. Please allow access.");
-                // Default to a known location if denied
-                setUserLocation({ lat: 10.5925, lng: 76.1555 });
+                setUserLocation({ lat: 10.5925, lng: 76.1555 }); // Default fallback
             }
         );
     }, []);
 
-    // MOCK FUNCTION: Simulates fetching plane data from a backend
-    const mockFetchPlaneData = useCallback(() => {
+    // --- REAL-TIME DATA FETCHING ---
+    const fetchRealPlaneData = useCallback(async () => {
         if (!userLocation) return;
 
-        // Create a fake plane that moves across the user's location
+        setStatusMessage("Scanning the skies to find your happiness...");
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/planes?lat=${userLocation.lat}&lon=${userLocation.lng}`);
+            if (!response.ok) {
+                throw new Error(`Backend Error: ${response.statusText}`);
+            }
+            const data = await response.json();
+            
+            let closestPlaneForNotification = null;
+            let closestPlaneForCompass = null;
+            let minDistance = Infinity;
+            
+            for (const plane of data.planes) {
+                const distance = calculateDistance(userLocation.lat, userLocation.lng, plane.lat, plane.lon);
+                
+                // Track the absolute closest plane for the compass
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPlaneForCompass = plane;
+                }
+
+                // Check if this plane is a candidate for notification
+                const altitudeFt = plane.altitude_m * 3.28084;
+                if (distance < NOTIFICATION_RADIUS_KM && altitudeFt > MINIMUM_ALTITUDE_FT) {
+                    closestPlaneForNotification = { ...plane, altitude_ft: altitudeFt };
+                }
+            }
+
+            // Update compass to point to the nearest plane, regardless of notification status
+            if (closestPlaneForCompass) {
+                const newBearing = calculateBearing(userLocation.lat, userLocation.lng, closestPlaneForCompass.lat, closestPlaneForCompass.lon);
+                setBearing(newBearing);
+            }
+
+            // Update notification plane
+            if (closestPlaneForNotification) {
+                // Trigger notification only for a new plane
+                if (!detectedPlane || detectedPlane.icao24 !== closestPlaneForNotification.icao24) {
+                    console.log("New plane detected:", closestPlaneForNotification);
+                    setDetectedPlane(closestPlaneForNotification);
+                    notificationSoundRef.current.play().catch(e => console.error("Error playing sound:", e));
+                }
+            } else {
+                setDetectedPlane(null); // No plane in notification range
+            }
+
+        } catch (error) {
+            console.error("Failed to fetch plane data:", error);
+            setStatusMessage("Error connecting to server. Is it running?");
+        }
+    }, [userLocation, detectedPlane]);
+
+        // --- Mock Mode ---
+    const mockFetchPlaneData = useCallback(() => {
+        if (!userLocation) return;
+        setStatusMessage("Generating mock plane data...");
+
         const mockPlane = {
             icao24: 'mock' + Date.now(),
-            callsign: 'SKYFUN ' + Math.floor(Math.random() * 100),
-            lat: userLocation.lat + (Math.random() - 0.5) * 0.1, // Closer range for testing
+            callsign: 'MOCK ' + Math.floor(Math.random() * 1000),
+            lat: userLocation.lat + (Math.random() - 0.5) * 0.1,
             lon: userLocation.lng + (Math.random() - 0.5) * 0.1,
-            altitude: MINIMUM_ALTITUDE_FT + Math.random() * 20000,
-            velocity: 200 + Math.random() * 100, // m/s
+            altitude_m: (MINIMUM_ALTITUDE_FT + Math.random() * 20000) / 3.28084,
+            velocity_ms: 200 + Math.random() * 100,
         };
 
         const distance = calculateDistance(userLocation.lat, userLocation.lng, mockPlane.lat, mockPlane.lon);
         const newBearing = calculateBearing(userLocation.lat, userLocation.lng, mockPlane.lat, mockPlane.lon);
+        const altitudeFt = mockPlane.altitude_m * 3.28084;
         
-        setBearing(newBearing); // Always update bearing for the compass
+        setBearing(newBearing);
 
-        // Check if the plane is within the notification zone
-        if (distance < NOTIFICATION_RADIUS_KM && mockPlane.altitude > MINIMUM_ALTITUDE_FT) {
-            // Only trigger notification for a new plane
+        if (distance < NOTIFICATION_RADIUS_KM && altitudeFt > MINIMUM_ALTITUDE_FT) {
             if (!detectedPlane || detectedPlane.icao24 !== mockPlane.icao24) {
-                setDetectedPlane(mockPlane);
-                notificationSoundRef.current.play().catch(e => console.error("Error playing notification sound:", e));
+                setDetectedPlane({ ...mockPlane, altitude_ft: altitudeFt, isMock: true });
+                notificationSoundRef.current.play().catch(e => console.error("Error playing sound:", e));
             }
         } else {
-            setDetectedPlane(null); // Plane is out of range
+            setDetectedPlane(null);
         }
     }, [userLocation, detectedPlane]);
 
-    // Effect to manage the tracking interval
+    // --- Effect to manage the tracking interval ---
     useEffect(() => {
         let intervalId = null;
         if (isTracking && userLocation) {
-            intervalId = setInterval(mockFetchPlaneData, TRACKING_INTERVAL_MS);
+            fetchRealPlaneData(); // Fetch immediately on start
+            intervalId = setInterval(fetchRealPlaneData, TRACKING_INTERVAL_MS);
             setStatusMessage("Scanning the skies...");
-        } else if (!isTracking && statusMessage !== "Click 'Start Tracking' to begin.") {
+        } else if (!isTracking) {
              setStatusMessage("Tracking stopped.");
         }
-        // Cleanup function
         return () => {
-            if (intervalId) {
-                clearInterval(intervalId);
-            }
+            if (intervalId) clearInterval(intervalId);
         };
-    }, [isTracking, userLocation, mockFetchPlaneData, statusMessage]);
+    }, [isTracking, userLocation, fetchRealPlaneData]);
     
-    // --- Audio Queue Logic ---
+    // // --- Effect for the "scanning" animation ---
+    // useEffect(() => {
+    //     let scanningInterval = null;
+    //     // Only run the animation if we are tracking but have NOT detected a plane.
+    //     if (isTracking && !detectedPlane) {
+    //         scanningInterval = setInterval(() => {
+    //             // Rotate the needle by 2 degrees every 50ms
+    //             setBearing(prevBearing => (prevBearing + 0.12) % 360);
+    //         }, 20);
+    //     }
+    //     // This cleanup function is crucial. It stops the animation
+    //     // as soon as a plane is detected or tracking is stopped.
+    //     return () => {
+    //         if (scanningInterval) {
+    //             clearInterval(scanningInterval);
+    //         }
+    //     };
+    // }, [isTracking, detectedPlane]);
+
+    useEffect(() => {
+    let animationFrameId;
+    let lastTime = null;
+
+    const rotateNeedle = (time) => {
+        if (!lastTime) lastTime = time;
+        const delta = (time - lastTime) / 1000;
+        lastTime = time;
+
+        // Very slow: 2 degrees per second (3 minutes per full rotation)
+        setBearing(prev => (prev + delta * 2) % 360);
+
+        if (isTracking && !detectedPlane) {
+            animationFrameId = requestAnimationFrame(rotateNeedle);
+        }
+    };
+
+    if (isTracking && !detectedPlane) {
+        animationFrameId = requestAnimationFrame(rotateNeedle);
+    }
+
+    return () => {
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+    }, [isTracking, detectedPlane]);
+
+    
+
+
+    // --- Audio Queue Logic  ---
     const playNextInQueue = useCallback(() => {
         if (audioQueue.current.length === 0) {
             isSpeaking.current = false;
@@ -225,18 +302,18 @@ export default function App() {
     }, []);
 
     const handleSpeakDirection = useCallback(() => {
-        if (isSpeaking.current) return;
-        const phrase = getDirectionPhrase(bearing);
+        if (isSpeaking.current || !detectedPlane) return;
+        const planeBearing = calculateBearing(userLocation.lat, userLocation.lng, detectedPlane.lat, detectedPlane.lon);
+        const phrase = getDirectionPhrase(planeBearing);
         audioQueue.current = [...phrase];
         playNextInQueue();
-    }, [bearing, playNextInQueue]);
+    }, [bearing, playNextInQueue, detectedPlane, userLocation]);
 
-    // --- Event Handlers ---
+    // --- Event Handlers (unchanged) ---
     const handleStartStopClick = () => {
         if (!userLocation) {
             getLocation();
         }
-        // Request notification permission if not granted
         if (Notification.permission !== "granted") {
             Notification.requestPermission().then(permission => {
                 if (permission === "granted") {
@@ -250,12 +327,15 @@ export default function App() {
         }
     };
     
-    // --- Render ---
+    // --- Render (unchanged) ---
     return (
         <main className="w-full min-h-screen bg-gradient-to-b from-blue-50 to-white flex flex-col items-center justify-center p-4 text-center">
-            <h1 className="text-5xl sm:text-6xl font-extrabold text-gray-800 tracking-tight">
-                SkyPing
+            <h1 className="text-5xl sm:text-6xl font-extrabold text-gray-800 tracking-tight py-5">
+                V-Compass
             </h1>
+            <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-700 tracking-tight py-5">
+                Vimaanam Compass to find your happiness
+            </h2>
             <p className="mt-2 text-gray-500">{statusMessage}</p>
             
             <div className="my-8">

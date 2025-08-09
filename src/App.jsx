@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 // --- Configuration ---
-const API_BASE_URL = "http://127.0.0.1:8000";
+//  const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = "https://v-compassapi.onrender.com";
 const NOTIFICATION_RADIUS_KM = 30;
 const MINIMUM_ALTITUDE_FT = 10000;
-const TRACKING_INTERVAL_MS = 10000;
+const TRACKING_INTERVAL_MS = 15000;
 const MOCK_TRACKING_INTERVAL_MS = 25000;
 
 // --- Helper Functions and Components ---
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371;
+    const R = 6371; // Radius of the Earth in km
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
@@ -55,7 +56,6 @@ const Compass = ({ bearing }) => {
                     borderBottom: '8rem solid #ef4444',
                     top: '1rem',
                     transformOrigin: 'bottom center',
-                    // CORRECTED: The 'transition' property has been removed to stop the animation.
                     transform: `rotate(${bearing}deg)`,
                 }}
             />
@@ -99,9 +99,8 @@ export default function App() {
     const [userLocation, setUserLocation] = useState(null);
     const [detectedPlane, setDetectedPlane] = useState(null);
     const [bearing, setBearing] = useState(0);
-    const [statusMessage, setStatusMessage] = useState("Click a mode to begin.");
+    const [statusMessage, setStatusMessage] = useState("Vimaanam Compass your compass to happiness.");
     
-    // CORRECTED: A map of sound names to file paths instead of creating new Audio() objects.
     const soundFiles = {
         notification: "/arfan-odraa.mp3",
         North: "/aruna-vadak.mp3",
@@ -114,8 +113,8 @@ export default function App() {
         EastSouth: "/fadil-east-south.mp3",
     };
 
-    // CORRECTED: A single ref for our audio element.
-    const audioPlayerRef = useRef(null); 
+    const audioPlayerRef = useRef(null);
+    const notificationPlayerRef = useRef(null); // Ref for the dedicated notification player
     const audioQueue = useRef([]);
     const isSpeaking = useRef(false);
 
@@ -134,18 +133,16 @@ export default function App() {
             },
             () => {
                 setStatusMessage("Unable to get location. Using default. Please allow access.");
-                setUserLocation({ lat: 10.5925, lng: 76.1555 }); // Default location
+                setUserLocation({ lat: 10.5925, lng: 76.1555 });
             }
         );
     }, []);
     
-    // CORRECTED: New function to play the notification sound.
-    // This creates a temporary Audio object so it doesn't interfere with the main queue.
     const playNotificationSound = useCallback(() => {
-        const soundSrc = soundFiles.notification;
-        if (soundSrc) {
-            const audio = new Audio(soundSrc);
-            audio.play().catch(e => console.error("Error playing notification sound:", e));
+        // Use the dedicated audio element for notifications
+        if (notificationPlayerRef.current) {
+            notificationPlayerRef.current.currentTime = 0;
+            notificationPlayerRef.current.play().catch(e => console.error("Error playing notification sound:", e));
         }
     }, []);
 
@@ -171,7 +168,7 @@ export default function App() {
         if (distance < NOTIFICATION_RADIUS_KM && altitudeFt > MINIMUM_ALTITUDE_FT) {
             if (!detectedPlane || detectedPlane.icao24 !== mockPlane.icao24) {
                 setDetectedPlane({ ...mockPlane, altitude_ft: altitudeFt, isMock: true });
-                playNotificationSound(); // CORRECTED
+                playNotificationSound();
             }
         } else {
             setDetectedPlane(null);
@@ -210,7 +207,7 @@ export default function App() {
             if (closestPlaneForNotification) {
                 if (!detectedPlane || detectedPlane.icao24 !== closestPlaneForNotification.icao24) {
                     setDetectedPlane({ ...closestPlaneForNotification, isMock: false });
-                    playNotificationSound(); // CORRECTED
+                    playNotificationSound();
                 }
             } else {
                 setDetectedPlane(null); 
@@ -249,7 +246,7 @@ export default function App() {
         return () => { if (scanningInterval) clearInterval(scanningInterval); };
     }, [isTracking, isMockMode, detectedPlane]);
 
-    // --- Audio Logic (CORRECTED) ---
+    // --- Audio Logic ---
     const stopAllAudio = useCallback(() => {
         if (audioPlayerRef.current) {
             audioPlayerRef.current.pause();
@@ -275,7 +272,7 @@ export default function App() {
                 isSpeaking.current = false;
             });
         } else {
-            playNextInQueue(); // Skip if sound not found
+            playNextInQueue();
         }
     }, []);
 
@@ -351,10 +348,17 @@ export default function App() {
                 onSpeakDirection={handleSpeakDirection} 
             />
 
-            {/* CORRECTED: The single, hidden audio player for the voice queue. */}
+            {/* Player for the directional voice queue */}
             <audio 
                 ref={audioPlayerRef} 
                 onEnded={playNextInQueue} 
+                hidden 
+            />
+
+            {/* Dedicated, pre-loaded player for notifications to ensure smooth playback */}
+            <audio 
+                ref={notificationPlayerRef} 
+                src={soundFiles.notification} 
                 hidden 
             />
         </main>
